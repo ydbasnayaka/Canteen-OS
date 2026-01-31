@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CanteenOS | Professional</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- QR Code Generator Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+    <!-- HTML5-QRCode Library (For Webcam Scanning) -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+    <style>
+        /* PROFESSIONAL PRINT STYLES */
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            #qr-print-zone, #qr-print-zone * {
+                visibility: visible;
+            }
+            #qr-print-zone {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                margin: 0;
+                padding: 0;
+                display: flex;
+                justify-content: center;
+                align-items: flex-start;
+                background: white;
+                box-shadow: none;
+                border: none;
+            }
+            #qr-card-element {
+                margin-top: 50px;
+                border: 2px solid #000;
+                box-shadow: none !important;
+            }
+            .no-print {
+                display: none !important;
+            }
+            /* Hide URL/Date headers added by browser */
+            @page { margin: 0; }
+        }
+
+        /* Hide scanner input text for cleaner UI */
+        .scanner-input {
+            letter-spacing: 0.5em; /* Make dots wider apart */
+            font-weight: bold;
+        }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, where, getDocs, updateDoc, doc, onSnapshot, serverTimestamp, orderBy, limit, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ============================================================
+        //  FIREBASE CONFIGURATION
+        // ============================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyAfKp8gWavPxo5EZafetpeADh7eeRHQQx0",
+            authDomain: "canteen-2d80d.firebaseapp.com",
+            projectId: "canteen-2d80d",
+            storageBucket: "canteen-2d80d.firebasestorage.app",
+            messagingSenderId: "835222412943",
+            appId: "1:835222412943:web:8db25547c45a1f0e1d5afa"
+        };
+        
+        let appConfig = firebaseConfig;
+        if (typeof __firebase_config !== 'undefined') { appConfig = JSON.parse(__firebase_config); }
+
+        const app = initializeApp(appConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        const appId = (typeof __app_id !== 'undefined') ? __app_id : 'canteen-os-live';
+
+        // --- Data Handling ---
+        let EMPLOYEES = {};
+        let html5QrcodeScanner = null;
+
+        // --- Hardcoded Credentials ---
+        const APP_USERS = {
+            'SECURITY001': { pass: '12345', role: 'SECURITY', name: 'Security Desk', entry: 'security' },
+            'CANTEEN001': { pass: '67890', role: 'CANTEEN', name: 'Canteen Staff', entry: 'canteen' },
+            'ADMIN001': { pass: '1999', role: 'ADMIN', name: 'System Admin', entry: 'menu' }
+        };
+
+        // --- State Management ---
+        let currentUser = null; 
+        let loggedInAppUser = null; 
+        let currentRole = null; 
+        let isEditing = false;  
+        let dataLoaded = false;
+        let unsubscribeCanteen = null; 
+        let unsubscribeSecurity = null;
+        let unsubscribeReport = null;
+
+        // --- DOM Elements ---
+        const views = {
+            login: document.getElementById('view-login'),
+            menu: document.getElementById('view-menu'), 
+            security: document.getElementById('view-security'),
+            canteen: document.getElementById('view-canteen'),
+            staff: document.getElementById('view-staff'),
+            report: document.getElementById('view-report'),
+            loading: document.getElementById('view-loading')
+        };
+        const navBar = document.getElementById('main-nav');
+        const roleDisplay = document.getElementById('role-display');
+        const backBtn = document.getElementById('nav-back-btn');
+        
+        // --- Auth & Data Init ---
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth Error:", error);
+            }
+        };
+
+        const loadData = () => {
+            if (!auth.currentUser) return;
+
+            // 1. Load Employees
+            const qEmp = query(collection(db, 'artifacts', appId, 'public', 'data', 'employees'));
+            onSnapshot(qEmp, (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === "added" || change.type === "modified") {
+                        EMPLOYEES[change.doc.id] = change.doc.data();
+                    }
+                    if (change.type === "removed") {
+                        delete EMPLOYEES[change.doc.id];
+                    }
+                });
+                if (currentRole === 'STAFF_MANAGER' && !document.getElementById('staff-tab-directory').classList.contains('hidden')) {
+                    renderStaffDirectory();
+                }
+            });
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                if (!dataLoaded) {
+                    loadData();
+                    dataLoaded = true;
+                }
+                if (!loggedInAppUser) {
+                    showView('login');
+                }
+            } else {
+                showView('loading');
+            }
+        });
+
+        initAuth();
+
+        // --- App Login Logic ---
+        window.appLogin = (e) => {
+            e.preventDefault();
+            const u = document.getElementById('login-username').value.trim();
+            const p = document.getElementById('login-password').value.trim();
+            const errorMsg = document.getElementById('login-error');
+
+            if (APP_USERS[u] && APP_USERS[u].pass === p) {
+                loggedInAppUser = APP_USERS[u];
+                errorMsg.classList.add('hidden');
+                document.getElementById('view-login').classList.add('hidden');
+
+                if (loggedInAppUser.entry === 'menu') {
+                    showView('menu'); 
+                    navBar.classList.remove('hidden');
+                    roleDisplay.textContent = loggedInAppUser.name;
+                } else {
+                    switchRole(loggedInAppUser.role);
+                }
+            } else {
+                errorMsg.classList.remove('hidden');
+            }
+        };
+
+        window.logout = () => {
+            loggedInAppUser = null;
+            currentRole = null;
+            navBar.classList.add('hidden');
+            if(unsubscribeCanteen) unsubscribeCanteen();
+            if(unsubscribeSecurity) unsubscribeSecurity();
+            if(unsubscribeReport) unsubscribeReport();
+            
+            document.getElementById('login-username').value = '';
+            document.getElementById('login-password').value = '';
+            showView('login');
+        };
+
+        window.goBack = () => {
+            if (loggedInAppUser && loggedInAppUser.entry === 'menu') {
+                showView('menu');
+            }
+        };
+
+        // --- Navigation ---
+        window.switchRole = (role) => {
+            currentRole = role;
+            roleDisplay.textContent = role.replace('_', ' ');
+            navBar.classList.remove('hidden');
+            
+            if (unsubscribeCanteen) unsubscribeCanteen();
+            if (unsubscribeSecurity) unsubscribeSecurity();
+            if (unsubscribeReport) unsubscribeReport();
+
+            if (role === 'SECURITY') renderSecurityDashboard();
+            else if (role === 'CANTEEN') renderCanteenDashboard();
+            else if (role === 'STAFF_MANAGER') renderStaffDashboard();
+            else if (role === 'REPORT') renderReportDashboard();
+        };
+
+        function showView(viewName) {
+            const allViews = ['view-login', 'view-menu', 'view-security', 'view-canteen', 'view-staff', 'view-report', 'view-loading'];
+            allViews.forEach(id => {
+                const el = document.getElementById(id);
+                if(el) el.classList.add('hidden');
+            });
+
+            if(views[viewName]) views[viewName].classList.remove('hidden');
+
+            const showBack = (loggedInAppUser && loggedInAppUser.entry === 'menu' && viewName !== 'menu');
+            document.querySelectorAll('.section-back-btn').forEach(btn => {
+                if(showBack) btn.classList.remove('hidden');
+                else btn.classList.add('hidden');
+            });
+            backBtn.classList.add('hidden'); 
+        }
+
+        function getTodayStr() {
+            return new Date().toISOString().split('T')[0];
+        }
+
+        function formatCurrency(amount) {
+            return new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR' }).format(amount);
+        }
+
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast-message').textContent = message;
+            const icon = document.getElementById('toast-icon');
+            
+            toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded shadow-lg transition-all duration-300 z-50 flex items-center space-x-2 ${
+                type === 'error' ? 'bg-red-600 text-white' : 
+                type === 'success' ? 'bg-green-600 text-white' : 
+                'bg-gray-800 text-white'
+            }`;
+            icon.className = `fas ${type === 'error' ? 'fa-exclamation-circle' : type === 'success' ? 'fa-check-circle' : 'fa-info-circle'}`;
+
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 3000);
+        }
+
+        // ============================================================
+        //  HARDWARE SCANNER LOGIC (Bluetooth/USB)
+        // ============================================================
+        
+        window.handleScannerInput = (event, context) => {
+            if (event.key === 'Enter') {
+                const inputId = context === 'SECURITY' ? 'sec-emp-id' : 'can-emp-id';
+                const inputEl = document.getElementById(inputId);
+                const val = inputEl.value.trim().toUpperCase();
+                
+                if (val) {
+                    if (context === 'SECURITY') processSecurityScan(val);
+                    else processCanteenScan(val);
+                }
+                
+                // Immediately clear and refocus
+                inputEl.value = '';
+                inputEl.focus(); 
+            }
+        };
+
+        window.keepFocus = (elementId) => {
+            // Optional: keep focus logic if needed
+            // const el = document.getElementById(elementId);
+            // if(el && document.activeElement !== el) el.focus();
+        };
+
+        // ============================================================
+        //  WEBCAM SCANNER LOGIC
+        // ============================================================
+
+        window.startWebcamScanner = (context) => {
+            const modal = document.getElementById('webcam-modal');
+            modal.classList.remove('hidden');
+
+            if(html5QrcodeScanner) {
+                html5QrcodeScanner.clear().catch(err => console.log("Clear err", err));
+            }
+
+            html5QrcodeScanner = new Html5QrcodeScanner(
+                "reader", { fps: 10, qrbox: 250 }, false);
+            
+            html5QrcodeScanner.render((decodedText, decodedResult) => {
+                stopWebcamScanner(); // Close modal immediately
+                const val = decodedText.trim().toUpperCase();
+                
+                if (context === 'SECURITY') {
+                    processSecurityScan(val);
+                } else if (context === 'CANTEEN') {
+                    processCanteenScan(val);
+                }
+            }, (errorMessage) => {
+                // ignore parsing errors
+            });
+        };
+
+        window.stopWebcamScanner = () => {
+            if(html5QrcodeScanner) {
+                html5QrcodeScanner.clear().then(() => {
+                    document.getElementById('webcam-modal').classList.add('hidden');
+                }).catch(err => {
+                    console.error("Failed to clear scanner", err);
+                    document.getElementById('webcam-modal').classList.add('hidden');
+                });
+            } else {
+                document.getElementById('webcam-modal').classList.add('hidden');
+            }
+        };
+
+        // ============================================================
+        //  SECURITY ROLE
+        // ============================================================
+        
+        async function processSecurityScan(empId) {
+            const emp = EMPLOYEES[empId];
+            if(!emp) {
+                playAudio('error');
+                // HIDE ID from error message
+                showScanResultModal('INVALID', 'Access Card Not Recognized', 'error');
+                return;
+            }
+
+            const todayStr = getTodayStr();
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'tokens'),
+                where('empId', '==', emp.id),
+                where('issuedDate', '==', todayStr)
+            );
+
+            try {
+                const snapshot = await getDocs(q);
+                
+                if (!snapshot.empty) {
+                    const data = snapshot.docs[0].data();
+                    playAudio('error');
+                    // Show NAME only
+                    showScanResultModal('ALREADY ACTIVE', `${emp.name} is already checked in today.`, 'warning');
+                } else {
+                    await issueToken(emp);
+                    playAudio('success');
+                }
+            } catch (e) {
+                console.error("Security Scan Error:", e);
+                showToast("System Error", "error");
+            }
+        }
+
+        async function issueToken(emp) {
+            try {
+                const todayStr = getTodayStr();
+                const cost = emp.tokenLimit || 80;
+                
+                const tokenData = {
+                    tokenString: `TKN-${Math.floor(Math.random()*10000)}`,
+                    empId: emp.id,
+                    empName: emp.name,
+                    dept: emp.dept,
+                    company: emp.companyName || '',
+                    account: emp.accountName || '',
+                    issuedDate: todayStr,
+                    status: 'ISSUED',
+                    issuedAt: serverTimestamp(),
+                    issuedBy: currentUser.uid,
+                    costs: { total: cost }
+                };
+
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), tokenData);
+                // SHOW NAME ONLY
+                showScanResultModal('ENTRY APPROVED', `${emp.name} activated for meals.`, 'success');
+            } catch (e) {
+                console.error(e);
+                showToast('Error activating employee', 'error');
+            }
+        }
+
+        function renderSecurityDashboard() {
+            showView('security'); 
+            const input = document.getElementById('sec-emp-id');
+            if(input) {
+                input.value = '';
+                input.focus();
+            }
+
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'tokens'),
+                orderBy('issuedAt', 'desc'),
+                limit(5)
+            );
+            
+            unsubscribeSecurity = onSnapshot(q, (snapshot) => {
+                const list = document.getElementById('sec-recent-list');
+                list.innerHTML = '';
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    const el = document.createElement('div');
+                    el.className = 'flex justify-between items-center p-3 border-b border-gray-100 last:border-0';
+                    el.innerHTML = `
+                        <div class="flex items-center">
+                            <div class="h-8 w-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs mr-3">
+                                ${data.empName.charAt(0)}
+                            </div>
+                            <div>
+                                <div class="font-medium text-gray-800 text-sm">${data.empName}</div>
+                                <div class="text-xs text-gray-500">${data.dept}</div>
+                            </div>
+                        </div>
+                        <span class="text-xs font-bold px-2 py-1 rounded-full ${getStatusColor(data.status)}">${data.status}</span>
+                    `;
+                    list.appendChild(el);
+                });
+            });
+        }
+
+        // ============================================================
+        //  CANTEEN ROLE
+        // ============================================================
+
+        async function processCanteenScan(empId) {
+            const todayStr = getTodayStr();
+
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'tokens'),
+                where('empId', '==', empId),
+                where('issuedDate', '==', todayStr)
+            );
+
+            try {
+                const snapshot = await getDocs(q);
+                
+                if (snapshot.empty) {
+                    playAudio('error');
+                    showScanResultModal('ACCESS DENIED', `Employee has not checked in at Security.`, 'error');
+                    return;
+                }
+
+                const docSnap = snapshot.docs[0];
+                const data = docSnap.data();
+                
+                if (data.status === 'ISSUED') {
+                    await redeemToken(docSnap.id, data);
+                    playAudio('success');
+                } else if (data.status === 'CONSUMED') {
+                    playAudio('error');
+                    showScanResultModal('ALREADY REDEEMED', `${data.empName} has already taken a meal.`, 'warning');
+                }
+
+            } catch (e) {
+                console.error("Canteen Scan Error:", e);
+                showToast('Error verifying token', 'error');
+            }
+        }
+
+        async function redeemToken(docId, data) {
+            try {
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tokens', docId), {
+                    status: 'CONSUMED',
+                    consumedAt: serverTimestamp(),
+                    consumedBy: currentUser.uid
+                });
+                showScanResultModal('MEAL APPROVED', `Serving: ${data.empName}`, 'success');
+            } catch (e) {
+                console.error("Redeem Error:", e);
+                showToast('Failed to redeem', 'error');
+            }
+        }
+
+        function renderCanteenDashboard() {
+            showView('canteen'); 
+            const input = document.getElementById('can-emp-id');
+            if(input) {
+                input.value = '';
+                input.focus();
+            }
+            
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'tokens'),
+                orderBy('consumedAt', 'desc'),
+                limit(10)
+            );
+            
+            unsubscribeCanteen = onSnapshot(q, (snapshot) => {
+                const container = document.getElementById('can-live-feed');
+                container.innerHTML = '';
+                
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    const card = document.createElement('div');
+                    card.className = 'bg-white p-3 rounded-lg border border-gray-100 shadow-sm flex items-center justify-between';
+                    const timeStr = data.consumedAt ? new Date(data.consumedAt.seconds*1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Just now';
+                    
+                    card.innerHTML = `
+                        <div class="flex items-center">
+                            <div class="h-10 w-10 bg-green-100 text-green-600 rounded-full flex items-center justify-center mr-3">
+                                <i class="fas fa-check"></i>
+                            </div>
+                            <div>
+                                <div class="font-bold text-gray-700 text-sm">${data.empName}</div>
+                                <div class="text-xs text-gray-400">${data.dept}</div>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                             <div class="text-xs font-bold text-gray-500">${timeStr}</div>
+                             <div class="text-[10px] text-gray-400">Verified</div>
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+            });
+        }
+
+        // ============================================================
+        //  UI UTILS & MODALS
+        // ============================================================
+
+        function showScanResultModal(title, message, type) {
+            const modal = document.getElementById('result-modal');
+            const iconEl = document.getElementById('res-icon');
+            const titleEl = document.getElementById('res-title');
+            const msgEl = document.getElementById('res-msg');
+            const bgEl = document.getElementById('res-bg');
+
+            titleEl.textContent = title;
+            msgEl.innerText = message;
+            
+            modal.classList.remove('hidden');
+
+            if (type === 'success') {
+                iconEl.className = "fas fa-check-circle text-5xl text-white mb-4";
+                bgEl.className = "bg-green-600 rounded-t-xl p-6 text-center";
+            } else if (type === 'error') {
+                iconEl.className = "fas fa-times-circle text-5xl text-white mb-4";
+                bgEl.className = "bg-red-600 rounded-t-xl p-6 text-center";
+            } else {
+                iconEl.className = "fas fa-exclamation-circle text-5xl text-white mb-4";
+                bgEl.className = "bg-yellow-500 rounded-t-xl p-6 text-center";
+            }
+
+            setTimeout(() => {
+                modal.classList.add('hidden');
+            }, 2000);
+        }
+
+        function playAudio(type) {}
+
+        // ============================================================
+        //  STAFF & QR GENERATOR (Professional Print)
+        // ============================================================
+        
+        window.switchStaffTab = (tab) => {
+            document.querySelectorAll('.staff-tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`staff-tab-${tab}`).classList.remove('hidden');
+            
+            document.querySelectorAll('.staff-tab-btn').forEach(el => {
+                el.classList.remove('bg-blue-600', 'text-white');
+                el.classList.add('bg-white', 'text-gray-600');
+            });
+            const btn = document.getElementById(`staff-btn-${tab}`);
+            if(btn) {
+                btn.classList.remove('bg-white', 'text-gray-600');
+                btn.classList.add('bg-blue-600', 'text-white');
+            }
+
+            if (tab === 'directory') renderStaffDirectory();
+            if (tab === 'create' && !isEditing) resetStaffForm(); 
+        };
+
+        function resetStaffForm() {
+            document.getElementById('create-staff-form').reset();
+            document.getElementById('new-token-val').value = 80;
+            const idField = document.getElementById('new-emp-id');
+            idField.readOnly = false;
+            idField.classList.remove('bg-gray-100', 'cursor-not-allowed');
+            isEditing = false;
+        }
+
+        function renderStaffDirectory() {
+            const container = document.getElementById('staff-directory-list');
+            container.innerHTML = '';
+            const employees = Object.values(EMPLOYEES);
+            
+            if (employees.length === 0) {
+                 container.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">No staff found.</td></tr>';
+                 return;
+            }
+
+            employees.forEach(emp => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-gray-50 border-b border-gray-100 transition';
+                tr.innerHTML = `
+                    <td class="px-6 py-4 text-sm font-medium text-gray-900">${emp.id}</td>
+                    <td class="px-6 py-4 text-sm">${emp.name}</td>
+                    <td class="px-6 py-4 text-sm">${emp.dept}</td>
+                    <td class="px-6 py-4 text-sm">
+                        <div class="flex space-x-2">
+                             <button onclick="showQrModal('${emp.id}', '${emp.name}', '${emp.dept}')" class="bg-gray-800 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-black transition" title="Show QR Code">
+                                <i class="fas fa-id-badge"></i> Print ID
+                            </button>
+                            <button onclick="editStaff('${emp.id}')" class="bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-3 py-1.5 rounded text-xs font-bold transition">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button onclick="deleteStaff('${emp.id}')" class="bg-red-50 text-red-600 hover:bg-red-100 px-3 py-1.5 rounded text-xs font-bold transition">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </td>
+                `;
+                container.appendChild(tr);
+            });
+        }
+
+        window.showQrModal = (id, name, dept) => {
+            const modal = document.getElementById('qr-gen-modal');
+            const container = document.getElementById('qr-code-container');
+            container.innerHTML = ''; // Clear previous
+            
+            // Set values for the Professional ID Card
+            document.getElementById('card-name').textContent = name;
+            // Removed hidden ID assignment entirely just in case, but structure remains for layout
+            document.getElementById('card-dept').textContent = dept || 'Employee';
+            
+            new QRCode(container, {
+                text: id,
+                width: 150,
+                height: 150,
+                colorDark : "#000000",
+                colorLight : "#ffffff",
+                correctLevel : QRCode.CorrectLevel.H
+            });
+            
+            modal.classList.remove('hidden');
+        };
+
+        window.closeQrModal = () => document.getElementById('qr-gen-modal').classList.add('hidden');
+
+        // Staff CRUD logic
+        window.createStaffProfile = async () => {
+            const empId = document.getElementById('new-emp-id').value.trim().toUpperCase();
+            const tokenLimit = parseFloat(document.getElementById('new-token-val').value) || 80;
+            const staffData = {
+                id: empId,
+                name: document.getElementById('new-emp-name').value.trim(),
+                dept: document.getElementById('new-dept-name').value.trim(),
+                accountName: document.getElementById('new-acct-name').value.trim(),
+                companyName: document.getElementById('new-comp-name').value.trim(),
+                tokenLimit: tokenLimit,
+                updatedAt: serverTimestamp()
+            };
+
+            if (!staffData.id || !staffData.name) return showToast('ID and Name required', 'error');
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId), staffData, { merge: true });
+            showToast(isEditing ? 'Profile Updated' : 'Staff Profile Created', 'success');
+            resetStaffForm();
+            switchStaffTab('directory');
+        };
+
+        window.editStaff = (id) => {
+            const emp = EMPLOYEES[id];
+            if (!emp) return;
+            document.getElementById('new-emp-id').value = emp.id;
+            document.getElementById('new-emp-name').value = emp.name;
+            document.getElementById('new-dept-name').value = emp.dept;
+            document.getElementById('new-token-val').value = emp.tokenLimit || 80;
+            document.getElementById('new-acct-name').value = emp.accountName || '';
+            document.getElementById('new-comp-name').value = emp.companyName || '';
+            
+            const idField = document.getElementById('new-emp-id');
+            idField.readOnly = true;
+            idField.classList.add('bg-gray-100', 'cursor-not-allowed');
+
+            isEditing = true;
+            document.querySelectorAll('.staff-tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`staff-tab-create`).classList.remove('hidden');
+            document.getElementById('staff-btn-create').classList.add('bg-blue-600', 'text-white');
+            document.getElementById('staff-btn-directory').classList.remove('bg-blue-600', 'text-white');
+        };
+
+        window.deleteStaff = async (id) => {
+            if(confirm(`Delete ${id}?`)) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', id));
+                showToast('Deleted', 'success');
+                delete EMPLOYEES[id];
+                renderStaffDirectory();
+            }
+        };
+
+        function renderStaffDashboard() {
+            showView('staff'); 
+            switchStaffTab('directory');
+        }
+
+        // ============================================================
+        //  FULL REPORTING SUITE
+        // ============================================================
+        
+        function renderReportDashboard() {
+            showView('report'); 
+            
+            // Set Default Dates to Today
+            document.getElementById('rpt-start').value = getTodayStr();
+            document.getElementById('rpt-end').value = getTodayStr();
+
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), orderBy('issuedAt', 'desc'), limit(500));
+            unsubscribeReport = onSnapshot(q, (snapshot) => {
+                let totalCostToday = 0;
+                let totalCostMonth = 0;
+                let issuedMonth = 0;
+                let consumedMonth = 0;
+                
+                const todayStr = getTodayStr();
+                const currentMonth = new Date().getMonth();
+
+                const dailyStats = {};
+                const deptStats = {};
+                const acctStats = {};
+                const compStats = {};
+
+                for (let i=6; i>=0; i--) {
+                    const d = new Date();
+                    d.setDate(d.getDate() - i);
+                    const ds = d.toISOString().split('T')[0];
+                    dailyStats[ds] = 0;
+                }
+
+                const tbody = document.getElementById('report-table-body');
+                if(tbody) tbody.innerHTML = '';
+
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    const cost = data.costs?.total || 0;
+                    const docId = doc.id;
+                    
+                    if(data.issuedDate === todayStr) {
+                        totalCostToday += cost;
+                    }
+
+                    if (new Date(data.issuedDate).getMonth() === currentMonth) {
+                        totalCostMonth += cost;
+                        issuedMonth++;
+                        if (data.status === 'CONSUMED') consumedMonth++;
+                    }
+
+                    if (dailyStats.hasOwnProperty(data.issuedDate)) {
+                        dailyStats[data.issuedDate] += cost;
+                    }
+
+                    const deptName = data.dept || 'Unknown';
+                    const acctName = data.account || 'Unknown';
+                    const compName = data.company || 'Unknown';
+
+                    deptStats[deptName] = (deptStats[deptName] || 0) + cost;
+                    acctStats[acctName] = (acctStats[acctName] || 0) + cost;
+                    compStats[compName] = (compStats[compName] || 0) + cost;
+
+                    if(tbody && data.issuedDate === todayStr) {
+                        const tr = document.createElement('tr');
+                        tr.className = 'hover:bg-gray-50 border-b border-gray-100 last:border-0';
+                        tr.innerHTML = `
+                            <td class="px-6 py-4 text-sm font-medium text-gray-900">${data.empName}</td>
+                            <td class="px-6 py-4 text-sm text-gray-500">${data.dept}</td>
+                            <td class="px-6 py-4 text-sm"><span class="px-2 py-1 rounded-full text-xs font-bold ${getStatusColor(data.status)}">${data.status}</span></td>
+                            <td class="px-6 py-4 text-sm font-medium text-gray-900">${formatCurrency(cost)}</td>
+                            <td class="px-6 py-4 text-sm text-center">
+                                <button onclick="deleteToken('${docId}')" class="text-red-500 hover:text-red-700 font-bold px-2 py-1 rounded hover:bg-red-50 transition-colors" title="Delete">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
+                            </td>
+                        `;
+                        tbody.appendChild(tr);
+                    }
+                });
+
+                document.getElementById('rpt-total-spend').textContent = formatCurrency(totalCostToday);
+                document.getElementById('rpt-month-spend').textContent = formatCurrency(totalCostMonth);
+                document.getElementById('rpt-tokens-issued-month').textContent = issuedMonth;
+                document.getElementById('rpt-tokens-consumed-month').textContent = consumedMonth;
+
+                renderDistributionChart('rpt-chart-dept', deptStats);
+                renderDistributionChart('rpt-chart-acct', acctStats);
+                renderDistributionChart('rpt-chart-comp', compStats);
+
+                const trendContainer = document.getElementById('rpt-chart-trend');
+                trendContainer.innerHTML = '';
+                const maxDaily = Math.max(...Object.values(dailyStats), 10);
+                
+                Object.keys(dailyStats).forEach(date => {
+                    const val = dailyStats[date];
+                    const hPercent = (val / maxDaily) * 100;
+                    const displayDate = new Date(date).toLocaleDateString('en-US', {weekday: 'short'});
+                    
+                    trendContainer.innerHTML += `
+                        <div class="flex flex-col items-center flex-1">
+                            <div class="w-full bg-blue-50 rounded-t-sm relative group h-32 flex items-end justify-center">
+                                <div class="w-2/3 bg-blue-500 rounded-t-sm transition-all duration-500" style="height: ${Math.max(hPercent, 2)}%"></div>
+                                <div class="absolute -top-8 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
+                                    ${formatCurrency(val)}
+                                </div>
+                            </div>
+                            <div class="text-[10px] text-gray-500 mt-2 font-medium">${displayDate}</div>
+                        </div>
+                    `;
+                });
+            });
+        }
+
+        window.deleteToken = async (id) => {
+            if(confirm('Are you sure you want to delete this token record?')) {
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tokens', id));
+                    showToast('Record deleted successfully', 'success');
+                } catch(e) {
+                    showToast('Failed to delete record', 'error');
+                }
+            }
+        };
+
+        function renderDistributionChart(containerId, stats) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+            const total = Object.values(stats).reduce((a,b)=>a+b, 0) || 1;
+            const sortedKeys = Object.keys(stats).sort((a,b) => stats[b] - stats[a]).slice(0, 5); 
+
+            sortedKeys.forEach(key => {
+                const val = stats[key];
+                const percent = (val / total) * 100;
+                container.innerHTML += `
+                    <div class="mb-3">
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="font-bold text-gray-600 truncate w-2/3" title="${key}">${key}</span>
+                            <span class="text-gray-500">${Math.round(percent)}%</span>
+                        </div>
+                        <div class="w-full bg-gray-100 rounded-full h-1.5">
+                            <div class="bg-indigo-500 h-1.5 rounded-full" style="width: ${percent}%"></div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        window.generateReport = async () => {
+            const startDate = document.getElementById('rpt-start').value;
+            const endDate = document.getElementById('rpt-end').value;
+            const filterType = document.getElementById('rpt-filter-type').value; 
+
+            if(!startDate || !endDate) return showToast('Please select date range', 'error');
+
+            const btn = document.getElementById('rpt-gen-btn');
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+            btn.disabled = true;
+
+            try {
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens')); 
+                const snapshot = await getDocs(q);
+                
+                let csvHeaders = "";
+                let rowMapper = null;
+                const getTime = (t) => t.issuedAt ? new Date(t.issuedAt.seconds*1000).toLocaleTimeString() : '';
+
+                if (filterType === 'ACCT') {
+                    csvHeaders = "Date,Time,Account,Status,Cost,Total Cost\r\n";
+                    rowMapper = (t) => [
+                        `"${t.issuedDate}"`, `"${getTime(t)}"`, 
+                        `"${t.account || '-'}"`, `"${t.status}"`, t.costs.total, t.costs.total
+                    ];
+                } else if (filterType === 'DEPT') {
+                    csvHeaders = "Date,Time,Department,Status,Cost,Total Cost\r\n";
+                    rowMapper = (t) => [
+                         `"${t.issuedDate}"`, `"${getTime(t)}"`, 
+                        `"${t.dept}"`, `"${t.status}"`, t.costs.total, t.costs.total
+                    ];
+                } else if (filterType === 'COMP') {
+                    csvHeaders = "Date,Time,Company,Status,Cost,Total Cost\r\n";
+                    rowMapper = (t) => [
+                         `"${t.issuedDate}"`, `"${getTime(t)}"`, 
+                        `"${t.company || '-'}"`, `"${t.status}"`, t.costs.total, t.costs.total
+                    ];
+                } else {
+                    csvHeaders = "Date,Time,Name,Department,Company,Account,Status,Cost,Total Cost\r\n";
+                    rowMapper = (t) => [
+                        `"${t.issuedDate}"`, `"${getTime(t)}"`, `"${t.empName}"`,
+                        `"${t.dept}"`, `"${t.company || '-'}"`, `"${t.account || '-'}"`, 
+                        `"${t.status}"`, t.costs.total, t.costs.total
+                    ];
+                }
+
+                let csvContent = "data:text/csv;charset=utf-8,\uFEFF" + csvHeaders;
+                let count = 0;
+
+                snapshot.forEach(doc => {
+                    const t = doc.data();
+                    if (t.issuedDate < startDate || t.issuedDate > endDate) return;
+                    csvContent += rowMapper(t).join(",") + "\r\n";
+                    count++;
+                });
+
+                if (count === 0) {
+                    showToast('No records found for criteria', 'error');
+                } else {
+                    const encodedUri = encodeURI(csvContent);
+                    const link = document.createElement("a");
+                    link.setAttribute("href", encodedUri);
+                    link.setAttribute("download", `Canteen_Report_${filterType}_${startDate}_to_${endDate}.csv`);
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    showToast(`Report downloaded (${count} rows)`, 'success');
+                }
+
+            } catch(e) {
+                console.error("CSV Gen Error:", e);
+                showToast('Export failed', 'error');
+            } finally {
+                btn.innerHTML = 'Download CSV Report';
+                btn.disabled = false;
+            }
+        };
+
+        function getStatusColor(status) {
+            return status === 'ISSUED' ? 'bg-yellow-100 text-yellow-800' : 
+                   status === 'CONSUMED' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800';
+        }
+    </script>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans min-h-screen flex flex-col">
+
+    <!-- Navbar -->
+    <nav id="main-nav" class="bg-slate-900 text-white shadow hidden sticky top-0 z-40">
+        <div class="container mx-auto px-4 py-3 flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <button id="nav-back-btn" onclick="goBack()" class="hidden hover:bg-slate-700 p-2 rounded-full mr-2 text-gray-300">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <i class="fas fa-qrcode text-yellow-500 text-xl"></i>
+                <span class="font-bold text-xl tracking-tight">CanteenOS <span class="text-xs font-normal text-gray-400 ml-1">v4.1 PRO</span></span>
+            </div>
+            <div class="flex items-center gap-4">
+                <div id="role-display" class="text-xs font-bold uppercase bg-slate-800 px-3 py-1 rounded text-slate-300"></div>
+                <button onclick="logout()" class="text-xs bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded font-bold transition flex items-center">
+                    <i class="fas fa-power-off mr-1"></i> Sign Out
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main -->
+    <main class="flex-grow container mx-auto px-4 py-6">
+        
+        <div id="view-loading" class="flex items-center justify-center h-64">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        </div>
+
+        <!-- Login View -->
+        <div id="view-login" class="hidden max-w-md mx-auto mt-20 animate-fade-in">
+            <div class="bg-white p-8 rounded-2xl shadow-2xl border border-gray-100 text-center">
+                <div class="h-20 w-20 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-6 text-white shadow-lg shadow-blue-200">
+                    <i class="fas fa-qrcode text-3xl"></i>
+                </div>
+                <h1 class="text-3xl font-extrabold text-slate-800 mb-2">CanteenOS</h1>
+                <p class="text-sm text-slate-500 mb-8">Professional Edition</p>
+                
+                <form onsubmit="appLogin(event)" class="space-y-4 text-left">
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase ml-1">Username</label>
+                        <input type="text" id="login-username" class="w-full px-4 py-3 border rounded-xl bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition" placeholder="e.g. SECURITY001" required>
+                    </div>
+                    <div>
+                         <label class="text-xs font-bold text-gray-500 uppercase ml-1">Password</label>
+                        <input type="password" id="login-password" class="w-full px-4 py-3 border rounded-xl bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition" placeholder="••••••••" required>
+                    </div>
+                    <div id="login-error" class="hidden text-red-500 text-sm text-center font-medium"><i class="fas fa-exclamation-triangle mr-1"></i> Invalid Credentials</div>
+                    <button type="submit" class="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3.5 rounded-xl shadow-lg transition transform active:scale-95">
+                        Access Dashboard
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- MENU -->
+        <div id="view-menu" class="hidden max-w-5xl mx-auto mt-10 animate-fade-in">
+            <h2 class="text-2xl font-bold text-slate-800 mb-6 border-l-4 border-yellow-500 pl-4">Select Operation Module</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div onclick="switchRole('SECURITY')" class="bg-white p-6 rounded-xl shadow hover:shadow-xl cursor-pointer border border-gray-100 group transition hover:-translate-y-1">
+                    <div class="h-14 w-14 bg-blue-50 rounded-2xl flex items-center justify-center mb-4 text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition">
+                        <i class="fas fa-shield-alt text-2xl"></i>
+                    </div>
+                    <h3 class="font-bold text-xl text-gray-800">Security Desk</h3>
+                    <p class="text-sm text-gray-500 mt-2">USB/Bluetooth/Webcam Ready.</p>
+                </div>
+                <div onclick="switchRole('CANTEEN')" class="bg-white p-6 rounded-xl shadow hover:shadow-xl cursor-pointer border border-gray-100 group transition hover:-translate-y-1">
+                    <div class="h-14 w-14 bg-green-50 rounded-2xl flex items-center justify-center mb-4 text-green-600 group-hover:bg-green-600 group-hover:text-white transition">
+                        <i class="fas fa-utensils text-2xl"></i>
+                    </div>
+                    <h3 class="font-bold text-xl text-gray-800">Canteen Counter</h3>
+                    <p class="text-sm text-gray-500 mt-2">Redeem Meals via Scanner.</p>
+                </div>
+                <div onclick="switchRole('REPORT')" class="bg-white p-6 rounded-xl shadow hover:shadow-xl cursor-pointer border border-gray-100 group transition hover:-translate-y-1">
+                    <div class="h-14 w-14 bg-indigo-50 rounded-2xl flex items-center justify-center mb-4 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition">
+                        <i class="fas fa-chart-line text-2xl"></i>
+                    </div>
+                    <h3 class="font-bold text-xl text-gray-800">Reports & Analytics</h3>
+                    <p class="text-sm text-gray-500 mt-2">Financials & CSV Export.</p>
+                </div>
+                <div onclick="switchRole('STAFF_MANAGER')" class="bg-white p-6 rounded-xl shadow hover:shadow-xl cursor-pointer border border-gray-100 group transition hover:-translate-y-1">
+                    <div class="h-14 w-14 bg-purple-50 rounded-2xl flex items-center justify-center mb-4 text-purple-600 group-hover:bg-purple-600 group-hover:text-white transition">
+                        <i class="fas fa-id-card text-2xl"></i>
+                    </div>
+                    <h3 class="font-bold text-xl text-gray-800">Staff Manager</h3>
+                    <p class="text-sm text-gray-500 mt-2">Employee Database & QR Gen.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECURITY DASHBOARD -->
+        <div id="view-security" class="hidden max-w-2xl mx-auto animate-fade-in relative">
+            <button onclick="goBack()" class="section-back-btn hidden mb-4 text-slate-500 hover:text-slate-700 flex items-center font-bold text-sm">
+                <i class="fas fa-arrow-left mr-2"></i> Dashboard
+            </button>
+
+            <!-- SCANNER ACTION -->
+            <div class="bg-white rounded-2xl shadow-xl overflow-hidden mb-6">
+                <div class="bg-blue-600 p-6 text-center text-white">
+                    <i class="fas fa-shield-alt text-4xl mb-2 opacity-80"></i>
+                    <h2 class="text-2xl font-bold">Security Entry Check</h2>
+                    <p class="text-blue-100 text-sm">Scan Employee QR to Activate</p>
+                </div>
+                <div class="p-8 flex flex-col items-center">
+                    <div class="w-full relative mb-4">
+                        <input 
+                            type="password" 
+                            id="sec-emp-id" 
+                            placeholder="CLICK TO SCAN (HIDDEN INPUT)" 
+                            class="w-full px-6 py-6 border-4 border-dashed border-blue-200 rounded-xl bg-blue-50 focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-100 font-mono text-center text-xl outline-none transition placeholder-blue-300 scanner-input"
+                            onkeydown="handleScannerInput(event, 'SECURITY')"
+                            onblur="keepFocus('sec-emp-id')"
+                            autocomplete="off"
+                            autofocus
+                        >
+                        <div class="text-xs text-gray-400 mt-2 text-center font-bold uppercase">Ready for Bluetooth/USB Scanner</div>
+                    </div>
+                    
+                    <button onclick="startWebcamScanner('SECURITY')" class="flex items-center text-blue-600 hover:text-blue-800 font-bold text-sm bg-blue-50 hover:bg-blue-100 px-4 py-2 rounded-lg transition">
+                        <i class="fas fa-camera mr-2"></i> Use Camera / Webcam
+                    </button>
+                </div>
+            </div>
+
+            <!-- RECENT LIST -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <h3 class="text-xs font-bold text-gray-400 uppercase mb-3">Recently Activated Today</h3>
+                <div id="sec-recent-list" class="space-y-1"></div>
+            </div>
+        </div>
+
+        <!-- CANTEEN DASHBOARD -->
+        <div id="view-canteen" class="hidden max-w-2xl mx-auto animate-fade-in relative">
+            <button onclick="goBack()" class="section-back-btn hidden mb-4 text-slate-500 hover:text-slate-700 flex items-center font-bold text-sm">
+                <i class="fas fa-arrow-left mr-2"></i> Dashboard
+            </button>
+
+            <!-- SCANNER ACTION -->
+            <div class="bg-white rounded-2xl shadow-xl overflow-hidden mb-6">
+                <div class="bg-green-600 p-6 text-center text-white">
+                    <i class="fas fa-utensils text-4xl mb-2 opacity-80"></i>
+                    <h2 class="text-2xl font-bold">Meal Redemption</h2>
+                    <p class="text-green-100 text-sm">Scan Employee QR to Redeem</p>
+                </div>
+                <div class="p-8 flex flex-col items-center">
+                     <div class="w-full relative mb-4">
+                        <input 
+                            type="password" 
+                            id="can-emp-id" 
+                            placeholder="CLICK TO SCAN (HIDDEN INPUT)" 
+                            class="w-full px-6 py-6 border-4 border-dashed border-green-200 rounded-xl bg-green-50 focus:bg-white focus:border-green-600 focus:ring-4 focus:ring-green-100 font-mono text-center text-xl outline-none transition placeholder-green-300 scanner-input"
+                            onkeydown="handleScannerInput(event, 'CANTEEN')"
+                            onblur="keepFocus('can-emp-id')"
+                            autocomplete="off"
+                            autofocus
+                        >
+                        <div class="text-xs text-gray-400 mt-2 text-center font-bold uppercase">Ready for Bluetooth/USB Scanner</div>
+                    </div>
+
+                    <button onclick="startWebcamScanner('CANTEEN')" class="flex items-center text-green-600 hover:text-green-800 font-bold text-sm bg-green-50 hover:bg-green-100 px-4 py-2 rounded-lg transition">
+                        <i class="fas fa-camera mr-2"></i> Use Camera / Webcam
+                    </button>
+                </div>
+            </div>
+
+            <!-- LIVE FEED -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <h3 class="text-xs font-bold text-gray-400 uppercase mb-3 flex justify-between items-center">
+                    <span>Live Redemptions</span>
+                    <span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
+                </h3>
+                <div id="can-live-feed" class="space-y-3"></div>
+            </div>
+        </div>
+
+        <!-- STAFF MANAGER -->
+        <div id="view-staff" class="hidden max-w-4xl mx-auto animate-fade-in relative">
+            <button onclick="goBack()" class="section-back-btn hidden mb-4 text-slate-500 hover:text-slate-700 flex items-center font-bold text-sm">
+                <i class="fas fa-arrow-left mr-2"></i> Dashboard
+            </button>
+            <div class="flex space-x-2 mb-6">
+                <button id="staff-btn-directory" onclick="switchStaffTab('directory')" class="staff-tab-btn px-4 py-2 bg-blue-600 text-white border rounded shadow-sm text-sm font-medium">Directory</button>
+                <button id="staff-btn-create" onclick="switchStaffTab('create')" class="staff-tab-btn px-4 py-2 bg-white text-gray-600 border rounded shadow-sm text-sm font-medium">Add Staff</button>
+            </div>
+
+            <!-- Directory -->
+            <div id="staff-tab-directory" class="staff-tab-content bg-white rounded-lg shadow-sm border overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Dept</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="staff-directory-list" class="bg-white divide-y divide-gray-200"></tbody>
+                </table>
+            </div>
+
+            <!-- Create/Edit -->
+            <div id="staff-tab-create" class="staff-tab-content hidden bg-white rounded-lg shadow-sm border p-6">
+                <form id="create-staff-form" class="grid grid-cols-1 md:grid-cols-2 gap-6" onsubmit="event.preventDefault(); createStaffProfile();">
+                    <div class="md:col-span-2 text-lg font-bold text-gray-800 pb-2 border-b">Employee Details</div>
+                    <div><label class="text-xs font-bold text-gray-500">ID (Used for QR)</label><input type="text" id="new-emp-id" class="w-full border rounded px-3 py-2 uppercase font-mono" required></div>
+                    <div><label class="text-xs font-bold text-gray-500">Name</label><input type="text" id="new-emp-name" class="w-full border rounded px-3 py-2" required></div>
+                    <div><label class="text-xs font-bold text-gray-500">Department</label><input type="text" id="new-dept-name" class="w-full border rounded px-3 py-2"></div>
+                    <div><label class="text-xs font-bold text-gray-500">Token Limit (LKR)</label><input type="number" id="new-token-val" class="w-full border rounded px-3 py-2" value="80"></div>
+                    <div><label class="text-xs font-bold text-gray-500">Company</label><input type="text" id="new-comp-name" class="w-full border rounded px-3 py-2"></div>
+                    <div><label class="text-xs font-bold text-gray-500">Account</label><input type="text" id="new-acct-name" class="w-full border rounded px-3 py-2"></div>
+                    <div class="md:col-span-2 text-right"><button type="submit" class="bg-blue-600 text-white px-6 py-2 rounded font-bold">Save Staff</button></div>
+                </form>
+            </div>
+        </div>
+
+        <!-- REPORT (FULL RESTORED) -->
+        <div id="view-report" class="hidden max-w-6xl mx-auto space-y-8 animate-fade-in relative">
+            <button onclick="goBack()" class="section-back-btn hidden mb-4 text-slate-500 hover:text-slate-700 flex items-center font-semibold">
+                <i class="fas fa-arrow-left mr-2"></i> Back to Dashboard
+            </button>
+            
+            <!-- 1. KPI Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200 border-l-4 border-blue-500">
+                    <div class="text-xs font-bold text-gray-400 uppercase">Today's Cost</div>
+                    <div id="rpt-total-spend" class="text-2xl font-bold text-gray-800 mt-2">LKR 0.00</div>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200 border-l-4 border-indigo-500">
+                    <div class="text-xs font-bold text-gray-400 uppercase">Current Month Cost</div>
+                    <div id="rpt-month-spend" class="text-2xl font-bold text-gray-800 mt-2">LKR 0.00</div>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200 border-l-4 border-orange-500">
+                    <div class="text-xs font-bold text-gray-400 uppercase">Monthly Tokens Issued</div>
+                    <div id="rpt-tokens-issued-month" class="text-2xl font-bold text-gray-800 mt-2">0</div>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200 border-l-4 border-green-500">
+                    <div class="text-xs font-bold text-gray-400 uppercase">Monthly Meals Redeemed</div>
+                    <div id="rpt-tokens-consumed-month" class="text-2xl font-bold text-gray-800 mt-2">0</div>
+                </div>
+            </div>
+
+            <!-- 2. Visual Analytics -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- Trend Chart -->
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <h4 class="font-bold text-gray-700 mb-6">Last 7 Days Cost Trend</h4>
+                    <div id="rpt-chart-trend" class="flex items-end justify-between h-48 space-x-2"></div>
+                </div>
+                
+                <!-- Department Distribution -->
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <h4 class="font-bold text-gray-700 mb-6">Cost by Department</h4>
+                    <div id="rpt-chart-dept" class="space-y-4 max-h-48 overflow-y-auto"></div>
+                </div>
+
+                <!-- Account Distribution -->
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <h4 class="font-bold text-gray-700 mb-6">Cost by Account</h4>
+                    <div id="rpt-chart-acct" class="space-y-4 max-h-48 overflow-y-auto"></div>
+                </div>
+
+                <!-- Company Distribution -->
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <h4 class="font-bold text-gray-700 mb-6">Cost by Company</h4>
+                    <div id="rpt-chart-comp" class="space-y-4 max-h-48 overflow-y-auto"></div>
+                </div>
+            </div>
+
+            <!-- 3. Recent Transactions -->
+            <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                <div class="px-6 py-4 border-b bg-gray-50 font-bold text-gray-700">Today's Activity Feed</div>
+                <div class="max-h-64 overflow-y-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50 sticky top-0">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Dept</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cost</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="report-table-body" class="bg-white divide-y divide-gray-200"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 4. Report Generator -->
+            <div class="bg-white rounded-lg shadow-sm border p-8">
+                <h3 class="font-bold text-xl text-gray-800 mb-6 flex items-center"><i class="fas fa-file-csv text-green-600 mr-2"></i> Report Generation</h3>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 mb-1">Start Date</label>
+                        <input type="date" id="rpt-start" class="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 mb-1">End Date</label>
+                        <input type="date" id="rpt-end" class="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 mb-1">Report Type / Grouping</label>
+                        <select id="rpt-filter-type" class="w-full border rounded px-3 py-2 bg-white outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="ALL">All Records (No Grouping)</option>
+                            <option value="DEPT">Department Wise</option>
+                            <option value="COMP">Company Wise</option>
+                            <option value="ACCT">Account Wise</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="mt-8 pt-6 border-t">
+                    <button onclick="generateReport()" id="rpt-gen-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded shadow-lg transition-colors">
+                        Download CSV Report
+                    </button>
+                    <p class="text-xs text-gray-500 mt-2">Export data for analysis. Use "All Records" for raw data or choose a grouping option.</p>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- RESULT MODAL -->
+    <div id="result-modal" class="fixed inset-0 hidden z-50 flex items-end sm:items-center justify-center pointer-events-none p-4">
+        <div class="bg-white w-full max-w-sm rounded-xl shadow-2xl pointer-events-auto transform transition-all scale-100">
+            <div id="res-bg" class="rounded-t-xl p-6 text-center">
+                <i id="res-icon" class="text-5xl text-white mb-4"></i>
+                <h2 id="res-title" class="text-2xl font-extrabold text-white tracking-tight"></h2>
+            </div>
+            <div class="p-6 text-center">
+                <p id="res-msg" class="text-gray-600 font-medium text-lg leading-relaxed"></p>
+                <button onclick="document.getElementById('result-modal').classList.add('hidden')" class="mt-6 w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-lg transition">Dismiss</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- QR GENERATOR MODAL (PROFESSIONAL PRINT) -->
+    <div id="qr-gen-modal" class="fixed inset-0 bg-black bg-opacity-75 hidden z-50 flex items-center justify-center p-4">
+        
+        <!-- On-Screen Modal Container -->
+        <div class="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full text-center relative">
+            
+            <h3 class="font-bold text-gray-500 text-sm mb-4 uppercase tracking-widest no-print">Print Preview</h3>
+
+            <!-- THE ID CARD TO BE PRINTED -->
+            <div id="qr-print-zone">
+                <div id="qr-card-element" class="bg-white border-2 border-gray-200 rounded-lg p-6 w-64 mx-auto shadow-md">
+                    <div class="border-b-2 border-gray-800 pb-2 mb-4">
+                        <div class="text-xs font-bold text-gray-400 uppercase tracking-widest">Employee Identity</div>
+                        <div class="font-extrabold text-gray-900 text-lg">CANTEEN PASS</div>
+                    </div>
+                    
+                    <div class="py-2">
+                        <div id="card-name" class="font-bold text-xl text-blue-900 leading-tight mb-1"></div>
+                        <div id="card-dept" class="text-xs font-bold text-gray-500 uppercase"></div>
+                    </div>
+
+                    <div class="flex justify-center my-4">
+                        <div id="qr-code-container" class="border p-2 bg-white"></div>
+                    </div>
+
+                    <div class="border-t border-gray-200 pt-2">
+                        <!-- ID display removed per request -->
+                        <div class="text-[10px] text-gray-400 font-medium">Authorized Personnel Only</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Buttons (Hidden on Print) -->
+            <div class="grid grid-cols-2 gap-3 mt-6 no-print">
+                <button onclick="window.print()" class="bg-blue-600 text-white py-2 rounded-lg font-bold hover:bg-blue-700 shadow-lg"><i class="fas fa-print mr-2"></i>Print Card</button>
+                <button onclick="closeQrModal()" class="bg-gray-200 text-gray-800 py-2 rounded-lg font-bold hover:bg-gray-300">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- WEBCAM SCANNER MODAL -->
+    <div id="webcam-modal" class="fixed inset-0 bg-black bg-opacity-90 hidden z-50 flex flex-col items-center justify-center p-4">
+        <div class="bg-white rounded-xl overflow-hidden w-full max-w-md relative shadow-2xl">
+            <div class="bg-gray-900 text-white p-4 flex justify-between items-center">
+                <span class="font-bold flex items-center"><i class="fas fa-camera mr-2"></i> Webcam Scanner</span>
+                <button onclick="stopWebcamScanner()" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="reader" class="w-full bg-black min-h-[300px]"></div>
+            <div class="p-4 text-center text-sm text-gray-500 bg-gray-50">
+                Position QR code within the frame to scan.
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="fixed bottom-4 right-4 translate-y-20 opacity-0 transition-all duration-300 z-50">
+        <div class="flex items-center space-x-2 px-6 py-3 rounded shadow-lg">
+            <i id="toast-icon" class="fas"></i>
+            <span id="toast-message"></span>
+        </div>
+    </div>
+
+</body>
+</html>
